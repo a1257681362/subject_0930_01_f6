@@ -19,4 +19,8 @@ mybatis-plus:
 coldchain:
   alert-scan:
     enabled: false
+  # V6 升级扫描同样关闭：测试用注入业务时钟直调 scanEscalations(now)，避免墙钟定时器提前升级
+  escalation:
+    scan:
+      enabled: false
 

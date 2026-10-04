@@ -69,6 +69,10 @@ public class LedgerService {
     private com.evops.coldchain.mapper.BatchAlertZoneSnapMapper alertSnapMapper;
     @Resource
     private com.evops.coldchain.mapper.TempAlertMapper tempAlertMapper;
+    @Resource
+    private ExceptionHandlingService exceptionHandlingService;
+    @Resource
+    private SettlementService settlementService;
 
     public Map<String, Object> batchLedger(Long batchId) {
         TransportBatch batch = batchMapper.selectById(batchId);
@@ -96,6 +100,10 @@ public class LedgerService {
             Map<String, Object> em = new LinkedHashMap<>();
             em.put("exception", event);
             em.put("evidences", evidences);
+            // V6 分级处置：处置结论引用的系统证据、逐级升级通知记录、是否已关闭
+            em.put("evidenceRefs", exceptionHandlingService.listRefs(event.getId()));
+            em.put("escalations", exceptionHandlingService.listEscalations(event.getId()));
+            em.put("closed", exceptionHandlingService.isClosed(event.getStatus()));
             exceptionList.add(em);
         }
 
@@ -171,6 +179,15 @@ public class LedgerService {
         handoverInfo.put("coldChainPermissionPermitted",
                 permissionService.isPermitted(CcConstants.PERM_COLD_CHAIN_HANDOVER));
         ledger.put("handovers", handoverInfo);
+
+        // V6 异常分级处置汇总 + 运费结算卡口状态
+        long openExceptionCount = exceptionHandlingService.countOpenForBatch(batchId);
+        Map<String, Object> exceptionGovernance = new LinkedHashMap<>();
+        exceptionGovernance.put("openExceptionCount", openExceptionCount);
+        exceptionGovernance.put("settlementBlocked", openExceptionCount > 0);
+        exceptionGovernance.put("settlements", settlementService.listByBatch(batchId));
+        ledger.put("exceptionGovernance", exceptionGovernance);
+
         ledger.put("opLogs", opLogs);
         return ledger;
     }

@@ -61,6 +61,8 @@ public class AlertEvaluationService {
     private ExceptionEventMapper exceptionMapper;
     @Resource
     private TransportBatchMapper batchMapper;
+    @Resource
+    private ExceptionHandlingService exceptionHandlingService;
 
     @Resource
     private OpLogService opLogService;
@@ -288,6 +290,11 @@ public class AlertEvaluationService {
         event.setAlertId(alert.getId());
         exceptionMapper.insert(event);
 
+        // V6：与人工/缓冲温度异常同一口径启动处置时钟——
+        // 确认时刻=连续超限达到容忍时长的采样点时刻 trigger；首次发现=连续超限起点 start；
+        // 分级规则按确认时生效版本快照，重放不覆盖（startClockOnConfirm 幂等）。
+        exceptionHandlingService.startClockOnConfirm(event, trigger.getRecordTime(), start);
+
         if (!CcConstants.BATCH_EXCEPTION.equals(batch.getStatus())
                 && !CcConstants.BATCH_SIGNED.equals(batch.getStatus())
                 && !CcConstants.BATCH_REVOKED.equals(batch.getStatus())) {
@@ -369,21 +376,26 @@ public class AlertEvaluationService {
         alert.setResolveTime(LocalDateTime.now());
         alertMapper.updateById(alert);
 
-        // 一并闭环由该预警联动产生的温度异常（仍只追加 resolve*，原描述与凭证不改），
-        // 使“处理预警”后批次不再被 OPEN 异常卡住签收。
+        // 一并闭环由该预警联动产生的温度异常：V6 起按同一套“证据结论 + 指定角色复核”口径推进——
+        // 以该温控预警为证据提交处置结论；当前主体具备复核角色（系统/ADMIN）时当场关闭，否则待复核。
         List<ExceptionEvent> linked = exceptionMapper.selectList(new QueryWrapper<ExceptionEvent>()
-                .eq("alert_id", alertId).eq("status", CcConstants.EXC_OPEN));
+                .eq("alert_id", alertId).notIn("status",
+                        CcConstants.EXC_CLOSED, CcConstants.EXC_RESOLVED));
+        int closedNow = 0, pendingNow = 0;
         for (ExceptionEvent e : linked) {
-            e.setStatus(CcConstants.EXC_RESOLVED);
-            e.setResolveNote("随温控预警#" + alertId + " 一并闭环：" + resolveNote);
-            e.setResolveBy(UserContext.currentId());
-            e.setResolveTime(LocalDateTime.now());
-            exceptionMapper.updateById(e);
+            exceptionHandlingService.applyAlertResolution(e, alertId, resolveNote);
+            if (CcConstants.EXC_CLOSED.equals(e.getStatus())) {
+                closedNow++;
+            } else {
+                pendingNow++;
+            }
         }
 
         opLogService.log(CcConstants.ENT_TEMP_ALERT, alert.getId(), alert.getBatchId(),
                 CcConstants.ACT_ALERT_RESOLVE, "温控预警#" + alertId + " 处理闭环：" + resolveNote
-                        + (linked.isEmpty() ? "" : "；联动闭环温度异常 " + linked.size() + " 条"));
+                        + (linked.isEmpty() ? ""
+                                : String.format("；联动温度异常 %d 条（当场复核关闭 %d，待指定角色复核 %d）",
+                                        linked.size(), closedNow, pendingNow)));
         return alert;
     }
 }

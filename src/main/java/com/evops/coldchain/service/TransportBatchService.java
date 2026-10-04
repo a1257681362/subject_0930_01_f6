@@ -25,7 +25,6 @@ import com.evops.coldchain.mapper.ShipmentOrderMapper;
 import com.evops.coldchain.mapper.TemperatureLogMapper;
 import com.evops.coldchain.mapper.TransportBatchMapper;
 import com.evops.common.BusinessException;
-import com.evops.common.UserContext;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -77,6 +76,8 @@ public class TransportBatchService {
     private DrugCategoryService categoryService;
     @Resource
     private AlertEvaluationService alertEvaluationService;
+    @Resource
+    private ExceptionHandlingService exceptionHandlingService;
     @Resource
     private OpLogService opLogService;
 
@@ -300,7 +301,8 @@ public class TransportBatchService {
                                 req.getRecordTime(), req.getMileageKm(), hit.getSegmentSeq(),
                                 hit.getOwnerName(), req.getTemperature(), min, max, bufferMinutes);
                 markExceptionInternal(batch, CcConstants.EXC_TEMP, desc, req.getRecordTime(),
-                        hit == null ? null : hit.getSegmentSeq());
+                        hit == null ? null : hit.getSegmentSeq(),
+                        req.getRecordTime(), req.getRecordTime());
             }
         }
         return log;
@@ -353,17 +355,26 @@ public class TransportBatchService {
         return minutes > bufferMinutes;
     }
 
-    /** 人工异常标记（追加，不触碰已有异常/凭证） */
+    /** 人工异常标记/确认（追加，不触碰已有异常/凭证）；确认即启动处置时钟 */
     @Transactional
     public ExceptionEvent markException(ExceptionMarkRequest req) {
         TransportBatch batch = requireActiveBatch(req.getBatchId());
         String type = normalizeType(req.getExceptionType());
-        LocalDateTime occurred = req.getOccurredTime() == null ? LocalDateTime.now() : req.getOccurredTime();
-        return markExceptionInternal(batch, type, req.getDescription(), occurred, null);
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime occurred = req.getOccurredTime() == null ? now : req.getOccurredTime();
+        // 首次发现时间可补录（缺省取发生时间）；处置时钟起点=本次确认登记时刻，不可由客户端指定/补改
+        LocalDateTime firstFound = req.getFirstFoundTime() == null ? occurred : req.getFirstFoundTime();
+        return markExceptionInternal(batch, type, req.getDescription(), occurred, null, now, firstFound);
     }
 
+    /**
+     * 追加异常事件并在确认瞬间启动处置时钟。
+     * @param confirmedTime  异常确认成立时刻（人工=登记时刻；温度超限=达到容忍/缓冲的采样点时刻）
+     * @param firstFoundTime 首次发现时间（可补录，落库后不可被任何后续补录覆盖）
+     */
     private ExceptionEvent markExceptionInternal(TransportBatch batch, String type, String description,
-                                                 LocalDateTime occurred, Integer segmentSeq) {
+                                                 LocalDateTime occurred, Integer segmentSeq,
+                                                 LocalDateTime confirmedTime, LocalDateTime firstFoundTime) {
         ExceptionEvent event = new ExceptionEvent();
         event.setBatchId(batch.getId());
         event.setExceptionType(type);
@@ -372,6 +383,9 @@ public class TransportBatchService {
         event.setStatus(CcConstants.EXC_OPEN);
         event.setSegmentSeq(segmentSeq);
         exceptionMapper.insert(event);
+
+        // V6：确认即启动处置时钟（分级规则快照 + 截止时间；首次发现时间一经写入不可覆盖）
+        exceptionHandlingService.startClockOnConfirm(event, confirmedTime, firstFoundTime);
 
         // 批次进入异常挂起（已签收/已撤回的不允许走到这里，前置已拦截）
         if (!CcConstants.BATCH_EXCEPTION.equals(batch.getStatus())) {
@@ -410,29 +424,9 @@ public class TransportBatchService {
         return evidence;
     }
 
-    /** 异常处理闭环：只追加处理说明（resolve* 字段），原描述与凭证保持不变 */
-    @Transactional
-    public ExceptionEvent resolveException(Long exceptionId, String resolveNote) {
-        ExceptionEvent event = requireException(exceptionId);
-        requireActiveBatch(event.getBatchId());
-        if (CcConstants.EXC_RESOLVED.equals(event.getStatus())) {
-            throw new BusinessException("异常已处理，不能重复处理");
-        }
-        event.setStatus(CcConstants.EXC_RESOLVED);
-        event.setResolveNote(resolveNote);
-        event.setResolveBy(UserContext.currentId());
-        event.setResolveTime(LocalDateTime.now());
-        exceptionMapper.updateById(event);
-
-        opLogService.log(CcConstants.ENT_EXCEPTION, event.getId(), event.getBatchId(),
-                CcConstants.ACT_EXCEPTION_RESOLVE,
-                "异常#" + event.getId() + " 处理闭环：" + resolveNote);
-        return event;
-    }
-
     /**
      * 签收闭环：必须按派车时固化的档案快照逐项核对，
-     * 且不存在未处理（OPEN）异常。核对口径不随档案后续变更而改变。
+     * 且不存在未关闭异常（V6：异常须经“证据结论 + 角色复核”CLOSED）。核对口径不随档案后续变更而改变。
      */
     @Transactional
     public TransportBatch sign(SignRequest req) {
@@ -463,12 +457,12 @@ public class TransportBatchService {
                     "签收核对不符：实收数量[%d]与发运数量[%d]不一致", req.getConfirmQty(), batch.getShipQty()));
         }
 
-        // 2) 未处理异常拦截
-        Long openCount = exceptionMapper.selectCount(new QueryWrapper<ExceptionEvent>()
-                .eq("batch_id", batch.getId())
-                .eq("status", CcConstants.EXC_OPEN));
-        if (openCount != null && openCount > 0) {
-            throw new BusinessException("存在 " + openCount + " 条未处理异常，暂不能签收闭环；请先处理或追加凭证");
+        // 2) 未闭环异常拦截：V6 起异常须“提交带证据结论 + 指定角色复核关闭”，
+        //    仅 CLOSED（历史 RESOLVED 同视）放行；OPEN/待复核/复核驳回均不得签收
+        long openCount = exceptionHandlingService.countOpenForBatch(batch.getId());
+        if (openCount > 0) {
+            throw new BusinessException("存在 " + openCount + " 条未关闭异常（待处置/待复核/复核驳回），暂不能签收闭环；"
+                    + "请先提交引用证据的处置结论并经指定角色复核关闭");
         }
 
         // 核对通过，闭环
@@ -585,6 +579,9 @@ public class TransportBatchService {
             case CcConstants.EXC_TEMP:
             case CcConstants.EXC_DAMAGE:
             case CcConstants.EXC_DELAY:
+            // V6 纳入分级处置：封签破损 / 收货拒签
+            case CcConstants.EXC_SEAL_BROKEN:
+            case CcConstants.EXC_RECEIVER_REJECT:
                 return type.trim().toUpperCase();
             default:
                 return CcConstants.EXC_OTHER;

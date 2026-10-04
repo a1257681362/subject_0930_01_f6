@@ -38,17 +38,37 @@ public class ColdChainRealm extends AuthorizingRealm {
         put("dispatcher", 2L, "dispatcher123", "DISPATCHER", new LinkedHashSet<>(Arrays.asList(
                 CcConstants.PERM_TEMPLATE_MANAGE,
                 CcConstants.PERM_ALERT_VIEW,
-                CcConstants.PERM_ALERT_RESOLVE)));
+                CcConstants.PERM_ALERT_RESOLVE,
+                // V6：调度岗可提交处置结论、重试升级通知（但不具备复核关闭权）
+                CcConstants.PERM_EXC_HANDLE,
+                CcConstants.PERM_EXC_ESCALATE)));
         put("carrier", 3L, "carrier123", "CARRIER", Collections.emptySet());
         put("receiver", 4L, "receiver123", "RECEIVER",
-                new LinkedHashSet<>(Collections.singletonList(CcConstants.PERM_ALERT_VIEW)));
+                new LinkedHashSet<>(Arrays.asList(
+                        CcConstants.PERM_ALERT_VIEW,
+                        // V6：收货岗可就拒签等异常提交处置结论（关闭仍须管理岗复核）
+                        CcConstants.PERM_EXC_HANDLE)));
+        // V6 运输/质量经理：一般（L1/延误）异常的指定复核关闭岗、升级处置、运费结算
+        put("manager", 6L, "manager123", "MANAGER", new LinkedHashSet<>(Arrays.asList(
+                CcConstants.PERM_ALERT_VIEW,
+                CcConstants.PERM_ALERT_RESOLVE,
+                CcConstants.PERM_EXC_HANDLE,
+                CcConstants.PERM_EXC_REVIEW,
+                CcConstants.PERM_EXC_ESCALATE,
+                CcConstants.PERM_SETTLEMENT)));
         // 管理员：冷链温控预警查看/导出/闭环/扫描 + 类别模板维护
+        // + V6 分级规则维护、复核关闭、升级处置、运费结算（"*" 覆盖全部权限点）
         put("admin", 5L, "admin123", "ADMIN", new LinkedHashSet<>(Arrays.asList(
                 CcConstants.PERM_ALERT_VIEW,
                 CcConstants.PERM_ALERT_EXPORT,
                 CcConstants.PERM_ALERT_RESOLVE,
                 CcConstants.PERM_ALERT_SCAN,
                 CcConstants.PERM_TEMPLATE_MANAGE,
+                CcConstants.PERM_EXC_GRADE_MANAGE,
+                CcConstants.PERM_EXC_HANDLE,
+                CcConstants.PERM_EXC_REVIEW,
+                CcConstants.PERM_EXC_ESCALATE,
+                CcConstants.PERM_SETTLEMENT,
                 "*")));
     }
 

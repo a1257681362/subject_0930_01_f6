@@ -3,7 +3,6 @@ package com.evops.coldchain.controller;
 import com.evops.coldchain.dto.DispatchRequest;
 import com.evops.coldchain.dto.EvidenceAppendRequest;
 import com.evops.coldchain.dto.ExceptionMarkRequest;
-import com.evops.coldchain.dto.ExceptionResolveRequest;
 import com.evops.coldchain.dto.RevokeRequest;
 import com.evops.coldchain.dto.SignRequest;
 import com.evops.coldchain.dto.TempReportRequest;
@@ -70,12 +69,11 @@ public class BatchController {
         return ApiResponse.ok(batchService.appendEvidence(req));
     }
 
-    /** 异常处理闭环（只追加处理说明） */
-    @PostMapping("/exceptions/{id}/resolve")
-    public ApiResponse<ExceptionEvent> resolveException(@PathVariable("id") Long id,
-                                                        @Valid @RequestBody ExceptionResolveRequest req) {
-        return ApiResponse.ok(batchService.resolveException(id, req.getResolveNote()));
-    }
+    /**
+     * 异常处置闭环已迁移到分级处置流程：
+     * POST /api/cold-chain/exceptions/{id}/conclusion 提交引用证据的处置结论，
+     * POST /api/cold-chain/exceptions/{id}/review      指定角色复核通过后关闭。
+     */
 
     /** 签收闭环：按批次快照（原档案版本）核对 */
     @PostMapping("/sign")

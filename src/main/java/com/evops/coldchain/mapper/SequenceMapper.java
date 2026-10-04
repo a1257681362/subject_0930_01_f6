@@ -30,4 +30,7 @@ public interface SequenceMapper {
 
     @Select("SELECT NEXT VALUE FOR seq_cc_category_no")
     Long nextCategoryNo();
+
+    @Select("SELECT NEXT VALUE FOR seq_cc_settlement_no")
+    Long nextSettlementNo();
 }

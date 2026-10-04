@@ -44,8 +44,47 @@ public final class CcConstants {
     public static final String EXC_DAMAGE = "DAMAGE";
     public static final String EXC_DELAY = "DELAY";
     public static final String EXC_OTHER = "OTHER";
+    // V6 纳入分级处置的四类运输异常：温度超限 / 封签破损 / 延误 / 收货拒签
+    public static final String EXC_SEAL_BROKEN = "SEAL_BROKEN";
+    public static final String EXC_RECEIVER_REJECT = "RECEIVER_REJECT";
+    // OPEN 待处置 / PENDING_REVIEW 已提交结论待复核 / REVIEW_REJECTED 复核驳回 / CLOSED 已复核关闭
     public static final String EXC_OPEN = "OPEN";
+    /** @deprecated V6 起处置闭环改为 OPEN→PENDING_REVIEW→CLOSED；RESOLVED 仅用于识别历史已闭环异常 */
+    @Deprecated
     public static final String EXC_RESOLVED = "RESOLVED";
+    public static final String EXC_PENDING_REVIEW = "PENDING_REVIEW";
+    public static final String EXC_REVIEW_REJECTED = "REVIEW_REJECTED";
+    public static final String EXC_CLOSED = "CLOSED";
+
+    // V6 异常分级（L1 一般 / L2 较重 / L3 重大）
+    public static final String GRADE_L1 = "L1";
+    public static final String GRADE_L2 = "L2";
+    public static final String GRADE_L3 = "L3";
+
+    // V6 升级通知发送结果（PENDING 待发 / SUCCESS 送达 / FAILED 失败待重试）
+    public static final String ESCALATION_PENDING = "PENDING";
+    public static final String ESCALATION_SUCCESS = "SUCCESS";
+    public static final String ESCALATION_FAILED = "FAILED";
+    public static final String ESCALATION_CHANNEL_STATION = "STATION";
+
+    // V6 运费结算单状态（CREATED 已建单 / CONFIRMED 已确认 / REVOKED 已作废）
+    public static final String SETTLEMENT_CREATED = "CREATED";
+    public static final String SETTLEMENT_CONFIRMED = "CONFIRMED";
+    public static final String SETTLEMENT_REVOKED = "REVOKED";
+
+    // V6 处置结论可引用的证据类型
+    public static final String EVIDENCE_TEMPERATURE_LOG = "TEMPERATURE_LOG";
+    public static final String EVIDENCE_EXCEPTION_FILE = "EVIDENCE";
+    public static final String EVIDENCE_TEMP_ALERT = "TEMP_ALERT";
+    public static final String EVIDENCE_SEAL = "SEAL";
+    public static final String EVIDENCE_HANDOVER = "HANDOVER";
+
+    // V6 岗位（与 ColdChainRealm 内置演示账号角色一致；分级规则 escalate_roles/review_role 存这些码）
+    public static final String ROLE_DISPATCHER = "DISPATCHER";
+    public static final String ROLE_CARRIER = "CARRIER";
+    public static final String ROLE_RECEIVER = "RECEIVER";
+    public static final String ROLE_MANAGER = "MANAGER";
+    public static final String ROLE_ADMIN = "ADMIN";
 
     // 操作日志实体类型
     public static final String ENT_DRUG = "DRUG";
@@ -66,6 +105,10 @@ public final class CcConstants {
     public static final String ENT_CATEGORY = "CATEGORY";
     public static final String ENT_ALERT_TEMPLATE = "ALERT_TEMPLATE";
     public static final String ENT_TEMP_ALERT = "TEMP_ALERT";
+    // V6 异常分级规则 / 升级通知 / 运费结算
+    public static final String ENT_EXC_GRADE = "EXC_GRADE_RULE";
+    public static final String ENT_ESCALATION = "EXC_ESCALATION";
+    public static final String ENT_SETTLEMENT = "FREIGHT_SETTLEMENT";
 
     // 校准凭证状态（VALID 有效 / VOID 作废；只追加 void* 字段，不删除原行）
     public static final String CERT_VALID = "VALID";
@@ -149,4 +192,26 @@ public final class CcConstants {
     public static final String ACT_ALERT_SCAN = "TEMP_ALERT_SCAN";
     public static final String ACT_ALERT_RESOLVE = "TEMP_ALERT_RESOLVE";
     public static final String ACT_ALERT_EXPORT = "TEMP_ALERT_EXPORT";
+    // V6 异常分级处置：规则维护 / 时钟确认 / 升级通知 / 升级重试 / 结论提交 / 复核通过 / 复核驳回 / 结算
+    public static final String ACT_EXC_GRADE_SAVE = "EXC_GRADE_SAVE";
+    public static final String ACT_EXC_CLOCK_START = "EXC_CLOCK_START";
+    public static final String ACT_ESCALATION_SEND = "EXC_ESCALATION_SEND";
+    public static final String ACT_ESCALATION_RETRY = "EXC_ESCALATION_RETRY";
+    public static final String ACT_EXCEPTION_SUBMIT = "EXCEPTION_SUBMIT";
+    public static final String ACT_EXCEPTION_REVIEW = "EXCEPTION_REVIEW";
+    public static final String ACT_SETTLEMENT_CREATE = "FREIGHT_SETTLEMENT_CREATE";
+    public static final String ACT_SETTLEMENT_CONFIRM = "FREIGHT_SETTLEMENT_CONFIRM";
+
+    // —— V6 异常分级处置 Shiro 权限点 ——
+    /** 异常分级规则维护（四类异常等级/响应时限/升级岗位/复核角色） */
+    public static final String PERM_EXC_GRADE_MANAGE = "coldchain:excgrade:manage";
+    /** 提交处置结论（引用证据）与查询处置详情 */
+    public static final String PERM_EXC_HANDLE = "coldchain:exception:handle";
+    /** 处置结论复核关闭（须同时具备规则指定角色） */
+    public static final String PERM_EXC_REVIEW = "coldchain:exception:review";
+    /** 升级通知手动重试 */
+    public static final String PERM_EXC_ESCALATE = "coldchain:exception:escalate";
+    /** 运费结算建单/确认 */
+    public static final String PERM_SETTLEMENT = "coldchain:settlement";
 }
+

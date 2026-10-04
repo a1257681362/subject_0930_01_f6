@@ -372,9 +372,9 @@ class CategoryAlertTemplateIntegrationTest {
                 Collections.singletonMap("resolveNote", "回温复核合格"), "admin", String.class);
         assertEquals(HttpStatus.OK, resolved.getStatusCode());
         assertEquals(CcConstants.ALERT_RESOLVED, alertMapper.selectById(alertId).getStatus());
-        // 闭环联动温度异常一并 RESOLVED，批次可继续签收
+        // 闭环联动温度异常按 V6 同口径：以预警为证据提交结论，admin 具备复核角色当场 CLOSED
         for (ExceptionEvent e : exceptions(batchId)) {
-            assertEquals(CcConstants.EXC_RESOLVED, e.getStatus());
+            assertEquals(CcConstants.EXC_CLOSED, e.getStatus());
         }
 
         ResponseEntity<byte[]> csv = exchange("/alerts/export", HttpMethod.GET, null, "admin", byte[].class);

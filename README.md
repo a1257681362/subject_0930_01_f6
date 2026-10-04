@@ -40,9 +40,10 @@ V2 另增路线温区分段四张表（见下节）与 `seq_cc_route_no` 序列�
 
 ### 接口（均在 `/api/cold-chain` 下，HTTP Basic 认证）
 
-内置账号：`dispatcher/dispatcher123`（调度）、`carrier/carrier123`（在途）、
-`receiver/receiver123`（签收）、`admin/admin123`（冷链温控管理员，V5 预警查看/导出/模板维护）、
-`bootstrap/bootstrap`。
+内置账号：`dispatcher/dispatcher123`（调度，可提交处置结论/重试升级）、`carrier/carrier123`（在途）、
+`receiver/receiver123`（签收，可就异常提交处置结论）、`manager/manager123`（运输/质量经理，V6
+一般异常复核关闭/升级处置/运费结算）、`admin/admin123`（冷链温控管理员，V5 预警查看/导出/模板维护，
+V6 分级规则维护/复核关闭/运费结算）、`bootstrap/bootstrap`。
 
 | 动作 | 方法与路径 |
 | --- | --- |
@@ -404,3 +405,99 @@ curl -u admin:admin123 -OJ http://localhost:8080/api/cold-chain/alerts/export
 与已产生预警不回写不消失、按采样点连续超限时长（短暂抖动≤合并窗合并且起点不变、对照超窗正常
 段打断重计）、一次连续段只产一条预警；以及**重启定时任务/扫描游标从头重放后“预警阈值按药品
 类别继承”不多写任何预警/异常/流水、操作者始终为 system 不丢**。
+
+## 冷链运输 V6：运输异常分级处置
+
+### 核心规则
+
+- **四类异常分级配置**：对温度超限 `TEMP_EXCURSION`、封签破损 `SEAL_BROKEN`、延误 `DELAY`、
+  收货拒签 `RECEIVER_REJECT` 分别配置**等级（L1/L2/L3）、响应时限（分钟）、升级岗位序列、
+  关闭前复核角色**。规则版本只追加（旧版本置 `SUPERSEDED`），**只影响此后确认的异常**——
+  异常在确认瞬间把当时生效规则逐字段快照到自身，在途处置时钟与规则后续调整脱钩。
+- **确认即启动处置时钟，补录不覆盖首次发现时间**：`confirmed_time`=异常确认成立的业务时刻
+  （人工登记=登记入库时刻；温度超限=连续超限达到容忍时长的采样点时刻），
+  `clock_deadline = confirmed_time + 响应时限`；`first_found_time` 首次发现时间可补录、
+  可早于确认时刻，但**一经写入永不修改**——后续补凭证、补报温度、定时重扫都不覆盖
+  `confirmed_time/first_found_time/clock_deadline`。
+- **冷链温度异常同一口径归属**：温度超限分级调到临界时间后，系统预警联动产生的温度异常与
+  人工温度异常走同一套时钟（确认时刻/首次发现/截止）与同一套分级快照，不因来源不同而口径不一致。
+- **逐级升级，发送结果与重试原因全留痕**：响应时限到期未提交有效处置结论，按升级岗位序列
+  逐级发通知（每“异常×级次”一行，只追加）；记录计划/发送时间、通道、`send_result`
+  （`PENDING/SUCCESS/FAILED`）、通道回执、尝试次数、最近重试时间/原因，历次重试原因追加进
+  `retry_reason_log`，**首发失败原因不被重试覆盖**。失败通知到间隔自动重试，也可人工重试；
+  扫描幂等，重启不多发级。
+- **处置结论必须引用证据**：提交结论须至少引用一条系统内已留存证据（温度留痕
+  `TEMPERATURE_LOG` / 异常凭证 `EVIDENCE` / 温控预警 `TEMP_ALERT` / 封签核验 `SEAL` /
+  交接单 `HANDOVER`），证据须真实存在且归属本异常/本批次，无证据或引用他批证据一律拒绝。
+- **关闭前指定角色复核**：提交后异常为 `PENDING_REVIEW`，由分级规则 `review_role` 指定角色
+  （ADMIN 可复核全部）复核通过才 `CLOSED`；驳回须填原因回到 `REVIEW_REJECTED`，
+  结论与证据原样保留，可补充后再提交。
+- **未关闭异常不能进入结算**：运费结算建单前强校验批次**已签收**且**无未关闭异常**
+  （`OPEN/PENDING_REVIEW/REVIEW_REJECTED` 均未关闭，`CLOSED` 与历史 `RESOLVED` 同视为关闭），
+  卡口不通过拒绝结算并逐条指明阻断的异常。
+
+异常状态机：`OPEN（确认启动时钟）→ PENDING_REVIEW（提交带证据结论）→ CLOSED（指定角色复核通过）`，
+复核驳回 `→ REVIEW_REJECTED →` 补充证据后再次提交。
+
+### 表结构增量（详见 schema.sql，版本标记 `cold-chain-6`）
+
+- `t_cc_exception_grade_rule`：四类异常分级规则（版本化只追加；等级/响应时限/升级岗位/复核角色）。
+- `t_cc_exception_escalation`：升级通知（异常×级次唯一；发送结果、通道回执、尝试次数、
+  最近及历次重试原因）。
+- `t_cc_exception_evidence_ref`：处置结论的证据引用（只追加；建引用时校验证据归属）。
+- `t_cc_freight_settlement`：运费结算单（批次唯一；建单前置“已签收+无未关闭异常”卡口）。
+- `t_cc_exception` 扩列：分级快照（`grade_*/response_minutes/escalate_roles/review_role`）、
+  处置时钟（`confirmed_time/first_found_time/clock_deadline/escalation_level`）、
+  提交复核（`submitted_time/review_*/close_time`）。
+
+### 接口增量（仍在 `/api/cold-chain` 下，HTTP Basic）
+
+| 动作 | 方法与路径 | 权限/角色 |
+| --- | --- | --- |
+| 当前生效分级规则总览 | `GET /exception-grades/effective` | 处置权限 |
+| 某类型规则版本 | `GET /exception-grades/{type}/versions` | 处置权限 |
+| 发布分级规则新版本 | `POST /exception-grades` | `coldchain:excgrade:manage`（admin） |
+| 异常处置详情（时钟/证据/升级记录） | `GET /exceptions/{id}/handling` | 处置权限 |
+| 提交引用证据的处置结论 | `POST /exceptions/{id}/conclusion` | `coldchain:exception:handle` |
+| 复核通过/驳回关闭 | `POST /exceptions/{id}/review` | `coldchain:exception:review` + 规则指定角色 |
+| 人工重试失败升级通知 | `POST /exceptions/escalations/{id}/retry` | `coldchain:exception:escalate` |
+| 建运费结算单（卡口） | `POST /settlements` | `coldchain:settlement`（manager/admin） |
+| 确认结算单 | `POST /settlements/{id}/confirm` | `coldchain:settlement` |
+| 批次结算单 | `GET /settlements/batch/{batchId}` | `coldchain:settlement` |
+
+```bash
+# 把温度超限分级调到临界时间：L3 / 响应时限 5 分钟 / 调度→经理→管理员逐级升级 / 管理员复核
+curl -su admin:admin123 -H 'Content-Type: application/json' -XPOST \
+  http://localhost:8080/api/cold-chain/exception-grades -d '{
+    "exceptionType":"TEMP_EXCURSION","gradeCode":"L3","gradeName":"重大",
+    "responseMinutes":5,
+    "escalateRoles":["DISPATCHER","MANAGER","ADMIN"],
+    "reviewRole":"ADMIN","changeReason":"温度超限调到临界5分钟"}'
+
+# 提交处置结论（必须引用证据：此处引用本批温度留痕 #123）
+curl -su dispatcher:dispatcher123 -H 'Content-Type: application/json' -XPOST \
+  http://localhost:8080/api/cold-chain/exceptions/10/conclusion -d '{
+    "conclusion":"回温30分钟恢复5.6℃，评估药品合格",
+    "evidences":[{"evidenceType":"TEMPERATURE_LOG","evidenceId":123,"note":"越限与回温曲线为证"}]}'
+
+# 指定角色复核关闭（dispatcher 无复核权 403；admin 复核通过）
+curl -su admin:admin123 -H 'Content-Type: application/json' -XPOST \
+  http://localhost:8080/api/cold-chain/exceptions/10/review -d '{"approved":true,"reviewRemark":"证据充分"}'
+
+# 批次签收后进入运费结算；若仍有未关闭异常会被拒绝并指明异常号
+curl -su manager:manager123 -H 'Content-Type: application/json' -XPOST \
+  http://localhost:8080/api/cold-chain/settlements -d '{"batchId":7,"amount":1280.00}'
+```
+
+> 失败重试演练：配置 `coldchain.escalation.station-fail=true` 后站内通道对每条升级通知返回失败，
+> 可验证 `send_result=FAILED`、首发失败原因留痕、到达间隔/人工重试后转 `SUCCESS` 且原因不被覆盖。
+> 定时升级扫描可用 `coldchain.escalation.scan.enabled=false` 关闭（集成测试直调服务注入时钟）。
+
+### V6 验收
+
+`ExceptionGradingIntegrationTest` 覆盖：四类内置分级与规则版本化（只影响此后确认异常、旧异常
+快照不变）；确认即启动时钟与首次发现时间补录后不被覆盖；**温度分级调到临界 5 分钟后系统预警
+联动异常与人工异常时钟同一口径**（确认=达容忍时长采样点、首次发现=连续超限起点、截止=确认+5）、
+逐级升级（调度→经理→管理员）与重复扫描幂等；无证据/他批证据拒绝、HTTP 处置权与复核权 403、
+驳回须填原因可补证再提交；以及未签收/未关闭异常均被结算与签收卡口拦截、关闭签收后方可结算。
+

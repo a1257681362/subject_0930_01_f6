@@ -67,6 +67,7 @@ class ColdChainFlowIntegrationTest {
     @Autowired private TransportBatchService batchService;
     @Autowired private ProbeService probeService;
     @Autowired private OpLogService opLogService;
+    @Autowired private com.evops.coldchain.service.ExceptionHandlingService handlingService;
     @Autowired private TransportBatchMapper batchMapper;
     @Autowired private ExceptionEventMapper exceptionMapper;
 
@@ -205,26 +206,35 @@ class ColdChainFlowIntegrationTest {
         assertEquals("/v/photo-01", evidences.get(0).getFileUrl());
         assertEquals("到货外箱照", evidences.get(0).getNote());
 
-        // ---------- 9. 存在 OPEN 异常时签收必须被拦截 ----------
+        // ---------- 9. 存在未关闭异常时签收必须被拦截 ----------
         SignRequest signReq = signReq(batch.getId(), batch);
         BusinessException blocked = assertThrows(BusinessException.class, () -> batchService.sign(signReq));
-        assertTrue(blocked.getMessage().contains("未处理异常"));
+        assertTrue(blocked.getMessage().contains("未关闭异常"));
 
-        // ---------- 10. 异常处理闭环：原描述不被修改，只追加 resolve* ----------
-        ExceptionEvent resolved1 = batchService.resolveException(autoExcId, "回温30分钟恢复至5.6℃，评估药品合格");
-        ExceptionEvent resolved2 = batchService.resolveException(damageExc.getId(), "破损2盒隔离拒收，其余正常");
-        // 第二次越限自动生成的温度异常同样处理（不允许遗留 OPEN）
+        // ---------- 10. V6 分级处置：处置结论必须引用证据，提交后经指定角色复核关闭 ----------
+        // 温度自动异常以温度留痕为证据；包装破损异常以追加的异常凭证为证据
+        closeWithEvidence(autoExcId, CcConstants.EVIDENCE_TEMPERATURE_LOG, badLog.getId(),
+                "回温30分钟恢复至5.6℃，评估药品合格");
+        closeWithEvidence(damageExc.getId(), CcConstants.EVIDENCE_EXCEPTION_FILE, e1.getId(),
+                "破损2盒隔离拒收，其余正常（到货外箱照为证）");
+        // 第二次越限自动生成的温度异常同样引用温度留痕闭环（不允许遗留未关闭异常）
         List<ExceptionEvent> allExc = batchService.listExceptions(batch.getId());
         for (ExceptionEvent e : allExc) {
-            if (CcConstants.EXC_OPEN.equals(e.getStatus())) {
-                batchService.resolveException(e.getId(), "复核温控曲线，越限时段短暂且已回温，药品评估合格");
+            if (!CcConstants.EXC_CLOSED.equals(e.getStatus())) {
+                closeWithEvidence(e.getId(), CcConstants.EVIDENCE_TEMPERATURE_LOG,
+                        latestTemperatureId(batch.getId()),
+                        "复核温控曲线，越限时段短暂且已回温，药品评估合格");
             }
         }
-        assertEquals(CcConstants.EXC_RESOLVED, resolved1.getStatus());
-        assertEquals(CcConstants.EXC_RESOLVED, resolved2.getStatus());
-        assertNotNull(resolved1.getResolveTime());
+        ExceptionEvent closed1 = exceptionMapper.selectById(autoExcId);
+        ExceptionEvent closed2 = exceptionMapper.selectById(damageExc.getId());
+        assertEquals(CcConstants.EXC_CLOSED, closed1.getStatus());
+        assertEquals(CcConstants.EXC_CLOSED, closed2.getStatus());
+        assertNotNull(closed1.getCloseTime());
+        assertNotNull(closed1.getConfirmedTime(), "确认即启动处置时钟");
+        assertNotNull(closed1.getClockDeadline());
         assertEquals(originalDescription, exceptionMapper.selectById(autoExcId).getDescription(),
-                "处理动作不得覆盖异常原描述");
+                "处置动作不得覆盖异常原描述");
         // 凭证仍为两条且内容不变
         assertEquals(2, batchService.listEvidence(damageExc.getId()).size());
 
@@ -336,6 +346,34 @@ class ColdChainFlowIntegrationTest {
         req.setFileUrl(fileUrl);
         req.setNote(note);
         return batchService.appendEvidence(req);
+    }
+
+    /**
+     * V6 标准闭环：以一条系统内证据提交处置结论，再由指定角色复核关闭。
+     * 服务层直调无 Shiro 主体（system），复核角色校验放行，直接 CLOSED。
+     */
+    private void closeWithEvidence(Long exceptionId, String evidenceType, Long evidenceId, String conclusion) {
+        com.evops.coldchain.dto.ExceptionConclusionRequest cr =
+                new com.evops.coldchain.dto.ExceptionConclusionRequest();
+        cr.setConclusion(conclusion);
+        com.evops.coldchain.dto.ExceptionConclusionRequest.EvidenceRef ref =
+                new com.evops.coldchain.dto.ExceptionConclusionRequest.EvidenceRef();
+        ref.setEvidenceType(evidenceType);
+        ref.setEvidenceId(evidenceId);
+        ref.setNote("支撑处置结论的证据");
+        cr.setEvidences(java.util.Collections.singletonList(ref));
+        handlingService.submitConclusion(exceptionId, cr);
+
+        com.evops.coldchain.dto.ExceptionReviewRequest rr =
+                new com.evops.coldchain.dto.ExceptionReviewRequest();
+        rr.setApproved(true);
+        rr.setReviewRemark("证据充分，复核通过");
+        handlingService.review(exceptionId, rr);
+    }
+
+    private Long latestTemperatureId(Long batchId) {
+        List<TemperatureLog> temps = batchService.listTemperatures(batchId);
+        return temps.get(temps.size() - 1).getId();
     }
 
     private TempReportRequest tempReq(Long batchId, LocalDateTime time, BigDecimal temp) {

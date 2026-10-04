@@ -91,6 +91,30 @@ public class ShiroConfig {
         chain.addPathDefinition("/ui/cold-chain/alerts",
                 "authcBasic, perms[" + com.evops.coldchain.CcConstants.PERM_ALERT_VIEW + "]");
 
+        // —— V6 运输异常分级处置 ——（顺序：具体后缀在前，宽泛通配在后，先匹配先生效）
+        // 分级规则：写=维护权限，读=处置权限
+        chain.addPathDefinition("/api/cold-chain/exception-grades",
+                "authcBasic, perms[" + com.evops.coldchain.CcConstants.PERM_EXC_GRADE_MANAGE + "]");
+        chain.addPathDefinition("/api/cold-chain/exception-grades/**",
+                "authcBasic, perms[" + com.evops.coldchain.CcConstants.PERM_EXC_HANDLE + "]");
+        // 复核关闭（且服务层再校验规则指定角色）
+        chain.addPathDefinition("/api/cold-chain/exceptions/*/review",
+                "authcBasic, perms[" + com.evops.coldchain.CcConstants.PERM_EXC_REVIEW + "]");
+        // 失败升级通知人工重试
+        chain.addPathDefinition("/api/cold-chain/exceptions/escalations/*/retry",
+                "authcBasic, perms[" + com.evops.coldchain.CcConstants.PERM_EXC_ESCALATE + "]");
+        // 提交引用证据的处置结论
+        chain.addPathDefinition("/api/cold-chain/exceptions/*/conclusion",
+                "authcBasic, perms[" + com.evops.coldchain.CcConstants.PERM_EXC_HANDLE + "]");
+        // 处置详情/时钟/升级记录等只读查询
+        chain.addPathDefinition("/api/cold-chain/exceptions/**",
+                "authcBasic, perms[" + com.evops.coldchain.CcConstants.PERM_EXC_HANDLE + "]");
+        // 运费结算（建单/确认/查询）
+        chain.addPathDefinition("/api/cold-chain/settlements",
+                "authcBasic, perms[" + com.evops.coldchain.CcConstants.PERM_SETTLEMENT + "]");
+        chain.addPathDefinition("/api/cold-chain/settlements/**",
+                "authcBasic, perms[" + com.evops.coldchain.CcConstants.PERM_SETTLEMENT + "]");
+
         // 冷链台账接口与管理页面使用 HTTP Basic，便于 curl/联调；浏览器会弹出登录框
         chain.addPathDefinition("/api/**", "authcBasic");
         chain.addPathDefinition("/ui/**", "authcBasic");
