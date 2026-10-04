@@ -12,9 +12,15 @@ public class SealVerifyRequest {
     private Long sealId;
     /** 核验人（不传取当前登录操作者账号） */
     private String verifiedBy;
-    /** 核验说明，如“封签完好、箱内温度达标” */
+    /** 核验说明，如“封签完好、箱内温度达标”；判损时必须写明破损情况 */
     @NotBlank(message = "核验说明不能为空（需留下确认依据）")
     private String verifyNote;
+    /**
+     * V6：核验结论是否发现封签破损/被破坏。
+     * TRUE=核验确认封签破损：确认事实照常只进不退，同时自动登记 SEAL_BROKEN 分级异常，
+     * 核验时刻即异常成立时刻（确认启钟）；FALSE/空=封签完好。
+     */
+    private Boolean broken;
 
     public Long getSealId() { return sealId; }
     public void setSealId(Long sealId) { this.sealId = sealId; }
@@ -22,4 +28,6 @@ public class SealVerifyRequest {
     public void setVerifiedBy(String verifiedBy) { this.verifiedBy = verifiedBy; }
     public String getVerifyNote() { return verifyNote; }
     public void setVerifyNote(String verifyNote) { this.verifyNote = verifyNote; }
+    public Boolean getBroken() { return broken; }
+    public void setBroken(Boolean broken) { this.broken = broken; }
 }

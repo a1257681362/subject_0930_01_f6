@@ -42,10 +42,51 @@ public final class CcConstants {
     // 异常
     public static final String EXC_TEMP = "TEMP_EXCURSION";
     public static final String EXC_DAMAGE = "DAMAGE";
+    /** V6：封签破损（封签核验确认破损时自动开单，旧 DAMAGE 仍可人工标记包装破损） */
+    public static final String EXC_SEAL_BROKEN = "SEAL_BROKEN";
     public static final String EXC_DELAY = "DELAY";
+    /** V6：收货拒签 */
+    public static final String EXC_REJECTION = "REJECTION";
     public static final String EXC_OTHER = "OTHER";
+    /** V6 异常状态：OPEN 待确认（人工补录未确认，时钟未启动）/ CONFIRMED 已确认时钟运行中
+     / REVIEWING 待复核 / RESOLVED 已复核关闭 */
     public static final String EXC_OPEN = "OPEN";
+    public static final String EXC_CONFIRMED = "CONFIRMED";
+    public static final String EXC_REVIEWING = "REVIEWING";
     public static final String EXC_RESOLVED = "RESOLVED";
+
+    // —— V6 异常分级 ——
+    /** 重大 */
+    public static final String GRADE_L1 = "L1";
+    /** 较大 */
+    public static final String GRADE_L2 = "L2";
+    /** 一般 */
+    public static final String GRADE_L3 = "L3";
+
+    // 处置岗位（与 ColdChainRealm 内置角色同口径）
+    public static final String ROLE_ADMIN = "ADMIN";
+    public static final String ROLE_DISPATCHER = "DISPATCHER";
+    public static final String ROLE_CARRIER = "CARRIER";
+    public static final String ROLE_RECEIVER = "RECEIVER";
+    /** 质量复核岗：异常关闭前必须由该角色复核 */
+    public static final String ROLE_QA = "QA";
+
+    // 通知阶段：RESPONSE 确认时首响通知 / ESCALATE 逾期升级 / RETRY 手动重试
+    public static final String NOTIFY_RESPONSE = "RESPONSE";
+    public static final String NOTIFY_ESCALATE = "ESCALATE";
+    public static final String NOTIFY_RETRY = "RETRY";
+    // 通知发送结果
+    public static final String NOTIFY_SUCCESS = "SUCCESS";
+    public static final String NOTIFY_FAILED = "FAILED";
+    // 通知渠道
+    public static final String NOTIFY_CHANNEL_SITE = "SITE";
+    public static final String NOTIFY_CHANNEL_WEBHOOK = "WEBHOOK";
+
+    // 复核结果
+    public static final String REVIEW_PENDING = "PENDING";
+    public static final String REVIEW_APPROVED = "APPROVED";
+    public static final String REVIEW_REJECTED = "REJECTED";
+    public static final String REVIEW_NA = "NA";
 
     // 操作日志实体类型
     public static final String ENT_DRUG = "DRUG";
@@ -149,4 +190,29 @@ public final class CcConstants {
     public static final String ACT_ALERT_SCAN = "TEMP_ALERT_SCAN";
     public static final String ACT_ALERT_RESOLVE = "TEMP_ALERT_RESOLVE";
     public static final String ACT_ALERT_EXPORT = "TEMP_ALERT_EXPORT";
+
+    // —— V6 运输异常分级 —— Shiro 权限点 ——
+    /** 异常分级规则配置 */
+    public static final String PERM_EXCEPTION_RULE_MANAGE = "coldchain:exception:rule:manage";
+    /** 异常确认（启动处置时钟） */
+    public static final String PERM_EXCEPTION_CONFIRM = "coldchain:exception:confirm";
+    /** 提交处置结论（必须引用证据） */
+    public static final String PERM_EXCEPTION_CONCLUDE = "coldchain:exception:conclude";
+    /** 关闭前复核（质量复核岗） */
+    public static final String PERM_EXCEPTION_REVIEW = "coldchain:exception:review";
+    /** 升级通知手动重试 */
+    public static final String PERM_EXCEPTION_NOTIFY_RETRY = "coldchain:exception:notify:retry";
+    /** 批次结算 */
+    public static final String PERM_BATCH_SETTLE = "coldchain:batch:settle";
+
+    // V6 操作动作
+    public static final String ACT_EXC_RULE_CHANGE = "EXC_GRADE_RULE_CHANGE";
+    public static final String ACT_EXC_CONFIRM = "EXCEPTION_CONFIRM";
+    public static final String ACT_EXC_CONCLUDE = "EXCEPTION_CONCLUDE";
+    public static final String ACT_EXC_REVIEW = "EXCEPTION_REVIEW";
+    public static final String ACT_EXC_NOTIFY = "EXCEPTION_NOTIFY";
+    public static final String ACT_EXC_NOTIFY_RETRY = "EXCEPTION_NOTIFY_RETRY";
+    public static final String ACT_EXC_ESCALATE = "EXCEPTION_ESCALATE";
+    public static final String ACT_BATCH_REJECT = "BATCH_REJECT";
+    public static final String ACT_BATCH_SETTLE = "BATCH_SETTLE";
 }

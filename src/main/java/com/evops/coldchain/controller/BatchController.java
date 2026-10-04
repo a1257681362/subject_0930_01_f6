@@ -1,6 +1,8 @@
 package com.evops.coldchain.controller;
 
 import com.evops.coldchain.dto.DispatchRequest;
+import com.evops.coldchain.dto.BatchRejectRequest;
+import com.evops.coldchain.dto.BatchSettleRequest;
 import com.evops.coldchain.dto.EvidenceAppendRequest;
 import com.evops.coldchain.dto.ExceptionMarkRequest;
 import com.evops.coldchain.dto.ExceptionResolveRequest;
@@ -81,6 +83,18 @@ public class BatchController {
     @PostMapping("/sign")
     public ApiResponse<TransportBatch> sign(@Valid @RequestBody SignRequest req) {
         return ApiResponse.ok(batchService.sign(req));
+    }
+
+    /** 收货拒签（V6）：登记即按收货拒签分级确认启钟，未关闭前不得签收/结算 */
+    @PostMapping("/reject")
+    public ApiResponse<ExceptionEvent> reject(@Valid @RequestBody BatchRejectRequest req) {
+        return ApiResponse.ok(batchService.reject(req));
+    }
+
+    /** 批次结算（V6）：已签收且无未关闭异常才放行 */
+    @PostMapping("/settle")
+    public ApiResponse<TransportBatch> settle(@Valid @RequestBody BatchSettleRequest req) {
+        return ApiResponse.ok(batchService.settle(req));
     }
 
     /** 撤回：作废标记，不删除原始记录 */

@@ -40,6 +40,12 @@ public class TempAlert extends BaseEntity {
     private String resolveNote;
     private Long resolveBy;
     private LocalDateTime resolveTime;
+    /**
+     * V6 首次发现时间（临界时刻）：连续超限达到容忍时长、温度异常客观成立的那一刻。
+     * 温度异常的 foundTime/confirmTime 与本列同一口径，处置时钟自该临界时刻起算。
+     * 与 triggerTime 同值落库（保留两列：预警语义=触发，时钟口径=首次发现）。
+     */
+    private LocalDateTime firstFoundTime;
 
     public Long getBatchId() { return batchId; }
     public void setBatchId(Long batchId) { this.batchId = batchId; }
@@ -79,4 +85,6 @@ public class TempAlert extends BaseEntity {
     public void setResolveBy(Long resolveBy) { this.resolveBy = resolveBy; }
     public LocalDateTime getResolveTime() { return resolveTime; }
     public void setResolveTime(LocalDateTime resolveTime) { this.resolveTime = resolveTime; }
+    public LocalDateTime getFirstFoundTime() { return firstFoundTime; }
+    public void setFirstFoundTime(LocalDateTime firstFoundTime) { this.firstFoundTime = firstFoundTime; }
 }

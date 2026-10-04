@@ -3,6 +3,8 @@ package com.evops.coldchain.service;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.evops.coldchain.CcConstants;
 import com.evops.coldchain.dto.DispatchRequest;
+import com.evops.coldchain.dto.BatchRejectRequest;
+import com.evops.coldchain.dto.BatchSettleRequest;
 import com.evops.coldchain.dto.EvidenceAppendRequest;
 import com.evops.coldchain.dto.ExceptionMarkRequest;
 import com.evops.coldchain.dto.RevokeRequest;
@@ -77,6 +79,8 @@ public class TransportBatchService {
     private DrugCategoryService categoryService;
     @Resource
     private AlertEvaluationService alertEvaluationService;
+    @Resource
+    private ExceptionLifecycleService exceptionLifecycleService;
     @Resource
     private OpLogService opLogService;
 
@@ -299,8 +303,9 @@ public class TransportBatchService {
                         : String.format("系统自动标记：%s 里程 %skm 第%d段（责任人=%s）测温 %s℃ 超出允许温区 %s~%s℃，连续越限已超过缓冲 %d 分钟",
                                 req.getRecordTime(), req.getMileageKm(), hit.getSegmentSeq(),
                                 hit.getOwnerName(), req.getTemperature(), min, max, bufferMinutes);
-                markExceptionInternal(batch, CcConstants.EXC_TEMP, desc, req.getRecordTime(),
-                        hit == null ? null : hit.getSegmentSeq());
+                // V6：温度超限客观成立（越过缓冲临界）即确认启钟，时钟起点=本次越限采样的临界时刻
+                registerTempException(batch, desc, req.getRecordTime(),
+                        hit == null ? null : hit.getSegmentSeq(), null);
             }
         }
         return log;
@@ -353,13 +358,32 @@ public class TransportBatchService {
         return minutes > bufferMinutes;
     }
 
-    /** 人工异常标记（追加，不触碰已有异常/凭证） */
+    /**
+     * 人工异常补录（追加）。
+     * V6：分级四类（温度超限/封签破损/延误/收货拒签）补录为“待确认(OPEN)”，处置时钟不启动，
+     * 需显式确认才定级启钟；occurredTime=首次发现时间，只写一次不被后续覆盖。
+     * 旧类型（DAMAGE/OTHER）仍走原“标记即 OPEN、resolveException 闭环”的旧路径。
+     */
     @Transactional
     public ExceptionEvent markException(ExceptionMarkRequest req) {
         TransportBatch batch = requireActiveBatch(req.getBatchId());
         String type = normalizeType(req.getExceptionType());
         LocalDateTime occurred = req.getOccurredTime() == null ? LocalDateTime.now() : req.getOccurredTime();
+        if (exceptionLifecycleService.isGradedType(type)) {
+            return exceptionLifecycleService.openManual(batch, type, req.getDescription(), occurred);
+        }
         return markExceptionInternal(batch, type, req.getDescription(), occurred, null);
+    }
+
+    /**
+     * 温度超限异常统一入口（V1~V2 缓冲判定 / V5 预警引擎共用）：
+     * 客观成立即按 TEMP_EXCURSION 分级确认，处置时钟自临界时刻 criticalTime 起算，
+     * foundTime 同值落库且不被任何补录覆盖。
+     */
+    public ExceptionEvent registerTempException(TransportBatch batch, String description,
+                                                 LocalDateTime criticalTime, Integer segmentSeq, Long alertId) {
+        return exceptionLifecycleService.registerAutoConfirmed(
+                batch, CcConstants.EXC_TEMP, description, criticalTime, segmentSeq, alertId);
     }
 
     private ExceptionEvent markExceptionInternal(TransportBatch batch, String type, String description,
@@ -410,13 +434,28 @@ public class TransportBatchService {
         return evidence;
     }
 
-    /** 异常处理闭环：只追加处理说明（resolve* 字段），原描述与凭证保持不变 */
+    /**
+     * 异常直接闭环（旧路径，保留兼容）：仅适用于不纳入 V6 分级的旧类型（DAMAGE/OTHER）。
+     * 分级四类（温度超限/封签破损/延误/收货拒签）必须走“确认 → 引用证据的处置结论 →
+     * 指定岗位复核”的新闭环，不能用一句话直接关闭。
+     */
     @Transactional
     public ExceptionEvent resolveException(Long exceptionId, String resolveNote) {
         ExceptionEvent event = requireException(exceptionId);
         requireActiveBatch(event.getBatchId());
+        if (exceptionLifecycleService.isGradedType(event.getExceptionType())
+                || event.getGrade() != null) {
+            throw new BusinessException(String.format(
+                    "异常#%d 为分级异常[%s/%s]，请通过“提交处置结论（引用证据）→ %s 岗位复核”关闭，不能直接填写说明闭环",
+                    exceptionId, event.getExceptionType(),
+                    event.getGrade() == null ? "待确认" : event.getGrade(),
+                    event.getReviewerRoleSnap() == null ? "质量复核" : event.getReviewerRoleSnap()));
+        }
         if (CcConstants.EXC_RESOLVED.equals(event.getStatus())) {
             throw new BusinessException("异常已处理，不能重复处理");
+        }
+        if (!CcConstants.EXC_OPEN.equals(event.getStatus())) {
+            throw new BusinessException("异常当前状态不允许直接闭环: " + event.getStatus());
         }
         event.setStatus(CcConstants.EXC_RESOLVED);
         event.setResolveNote(resolveNote);
@@ -426,8 +465,61 @@ public class TransportBatchService {
 
         opLogService.log(CcConstants.ENT_EXCEPTION, event.getId(), event.getBatchId(),
                 CcConstants.ACT_EXCEPTION_RESOLVE,
-                "异常#" + event.getId() + " 处理闭环：" + resolveNote);
+                "异常#" + event.getId() + " 处理闭环（旧类型直闭环）：" + resolveNote);
         return event;
+    }
+
+    /**
+     * 收货拒签（V6）：拒签即 REJECTION（重大 L1）异常客观成立，登记即确认启钟，
+     * 发货单/批次不进入签收闭环（保持挂起），异常未关闭前批次不得结算。
+     */
+    @Transactional
+    public ExceptionEvent reject(BatchRejectRequest req) {
+        TransportBatch batch = requireActiveBatch(req.getBatchId());
+        if (CcConstants.BATCH_SIGNED.equals(batch.getStatus())) {
+            throw new BusinessException("批次已签收闭环，不能再登记收货拒签");
+        }
+        if (CcConstants.BATCH_DISPATCHED.equals(batch.getStatus())) {
+            throw new BusinessException("批次尚未发运在途，不能登记收货拒签");
+        }
+        LocalDateTime now = LocalDateTime.now();
+        String desc = String.format("收货方 %s 拒签：%s", req.getRejectBy(), req.getReason());
+        ExceptionEvent event = exceptionLifecycleService.registerAutoConfirmed(
+                batch, CcConstants.EXC_REJECTION, desc, now, null, null);
+
+        opLogService.log(CcConstants.ENT_BATCH, batch.getId(), batch.getId(), CcConstants.ACT_BATCH_REJECT,
+                String.format("批次 %s 收货拒签：拒签人=%s，原因=%s；已按收货拒签分级确认并启动处置时钟，未关闭前不得签收/结算",
+                        batch.getBatchNo(), req.getRejectBy(), req.getReason()));
+        return event;
+    }
+
+    /**
+     * 批次结算（V6）：必须已签收闭环，且不存在未关闭异常。
+     * 未关闭（待确认/处置中/待复核）异常一律拦截，结算记账只追加一次。
+     */
+    @Transactional
+    public TransportBatch settle(BatchSettleRequest req) {
+        TransportBatch batch = requireBatch(req.getBatchId());
+        if (!CcConstants.BATCH_SIGNED.equals(batch.getStatus())) {
+            throw new BusinessException("仅已签收闭环批次允许结算，当前状态: " + batch.getStatus()
+                    + "（收货拒签/异常挂起批次须先关闭异常并完成签收）");
+        }
+        if (batch.getSettleTime() != null) {
+            throw new BusinessException("批次已于 " + batch.getSettleTime() + " 结算，不能重复结算");
+        }
+        exceptionLifecycleService.requireAllClosed(batch.getId(), "进入结算");
+
+        batch.setSettleTime(LocalDateTime.now());
+        batch.setSettleBy(UserContext.currentId());
+        batch.setSettleRemark(req.getSettleRemark());
+        batchMapper.updateById(batch);
+
+        opLogService.log(CcConstants.ENT_BATCH, batch.getId(), batch.getId(), CcConstants.ACT_BATCH_SETTLE,
+                String.format("批次 %s 完成结算（全部异常已复核关闭）：%s；结算人=%s",
+                        batch.getBatchNo(),
+                        req.getSettleRemark() == null ? "" : req.getSettleRemark(),
+                        UserContext.currentName()));
+        return batch;
     }
 
     /**
@@ -463,12 +555,11 @@ public class TransportBatchService {
                     "签收核对不符：实收数量[%d]与发运数量[%d]不一致", req.getConfirmQty(), batch.getShipQty()));
         }
 
-        // 2) 未处理异常拦截
-        Long openCount = exceptionMapper.selectCount(new QueryWrapper<ExceptionEvent>()
-                .eq("batch_id", batch.getId())
-                .eq("status", CcConstants.EXC_OPEN));
-        if (openCount != null && openCount > 0) {
-            throw new BusinessException("存在 " + openCount + " 条未处理异常，暂不能签收闭环；请先处理或追加凭证");
+        // 2) 未关闭异常拦截（V6：待确认/处置中/待复核均视为未关闭，分级异常须复核关闭后才能签收）
+        long openCount = exceptionLifecycleService.unclosedCount(batch.getId());
+        if (openCount > 0) {
+            throw new BusinessException("存在 " + openCount
+                    + " 条未关闭异常（待确认/处置中/待复核），暂不能签收闭环；请完成处置结论、引用证据并经指定岗位复核关闭");
         }
 
         // 核对通过，闭环
@@ -585,6 +676,8 @@ public class TransportBatchService {
             case CcConstants.EXC_TEMP:
             case CcConstants.EXC_DAMAGE:
             case CcConstants.EXC_DELAY:
+            case CcConstants.EXC_SEAL_BROKEN:
+            case CcConstants.EXC_REJECTION:
                 return type.trim().toUpperCase();
             default:
                 return CcConstants.EXC_OTHER;

@@ -64,6 +64,8 @@ public class LedgerService {
     @Resource
     private PermissionService permissionService;
     @Resource
+    private ExceptionLifecycleService exceptionLifecycleService;
+    @Resource
     private OpLogService opLogService;
     @Resource
     private com.evops.coldchain.mapper.BatchAlertZoneSnapMapper alertSnapMapper;
@@ -96,6 +98,18 @@ public class LedgerService {
             Map<String, Object> em = new LinkedHashMap<>();
             em.put("exception", event);
             em.put("evidences", evidences);
+            // V6：分级处置时钟 + 升级通知发送记录（含重试/失败原因）+ 复核记录
+            em.put("grade", event.getGrade());
+            em.put("gradeName", event.getGradeName());
+            em.put("foundTime", event.getFoundTime());
+            em.put("confirmTime", event.getConfirmTime());
+            em.put("responseDueTime", event.getResponseDueTime());
+            em.put("resolveDueTime", event.getResolveDueTime());
+            em.put("escalated", event.getEscalated());
+            em.put("escalateTime", event.getEscalateTime());
+            em.put("reviewStatus", event.getReviewStatus());
+            em.put("notifyLogs", exceptionLifecycleService.listNotifications(event.getId()));
+            em.put("reviewLogs", exceptionLifecycleService.listReviews(event.getId()));
             exceptionList.add(em);
         }
 
@@ -171,6 +185,14 @@ public class LedgerService {
         handoverInfo.put("coldChainPermissionPermitted",
                 permissionService.isPermitted(CcConstants.PERM_COLD_CHAIN_HANDOVER));
         ledger.put("handovers", handoverInfo);
+        // V6：未关闭异常计数（签收/结算卡口口径）与结算记账
+        ledger.put("unclosedExceptionCount", exceptionLifecycleService.unclosedCount(batchId));
+        Map<String, Object> settleInfo = new LinkedHashMap<>();
+        settleInfo.put("settleTime", batch.getSettleTime());
+        settleInfo.put("settleBy", batch.getSettleBy());
+        settleInfo.put("settleRemark", batch.getSettleRemark());
+        settleInfo.put("settled", batch.getSettleTime() != null);
+        ledger.put("settlement", settleInfo);
         ledger.put("opLogs", opLogs);
         return ledger;
     }

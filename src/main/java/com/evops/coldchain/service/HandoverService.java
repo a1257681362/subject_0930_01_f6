@@ -55,6 +55,8 @@ public class HandoverService {
     @Resource
     private PermissionService permissionService;
     @Resource
+    private ExceptionLifecycleService exceptionLifecycleService;
+    @Resource
     private OpLogService opLogService;
 
     // ---------------- 到仓登记 ----------------
@@ -213,17 +215,34 @@ public class HandoverService {
                     seal.getSealNo(), seal.getVerifyTime(), seal.getVerifiedBy(), nz(seal.getVerifyNote())));
         }
 
+        boolean brokenSeal = Boolean.TRUE.equals(req.getBroken());
+        LocalDateTime verifyTime = LocalDateTime.now();
         seal.setVerifyStatus(CcConstants.SEAL_CONFIRMED);
-        seal.setVerifyNote(req.getVerifyNote());
+        seal.setVerifyNote(brokenSeal ? ("【封签破损】" + req.getVerifyNote()) : req.getVerifyNote());
         seal.setVerifiedBy(isBlank(req.getVerifiedBy()) ? UserContext.currentName() : req.getVerifiedBy().trim());
-        seal.setVerifyTime(LocalDateTime.now());
+        seal.setVerifyTime(verifyTime);
         sealMapper.updateById(seal);
 
         long confirmed = countSeals(order.getId(), CcConstants.SEAL_CONFIRMED);
         opLogService.log(CcConstants.ENT_SEAL, seal.getId(), order.getBatchId(), CcConstants.ACT_SEAL_VERIFY,
-                String.format("交接单 %s 第%d签[%s]核验确认：%s（核验人=%s）；本单进度 %d/%d",
+                String.format("交接单 %s 第%d签[%s]核验确认：%s（核验人=%s%s）；本单进度 %d/%d",
                         order.getHandoverNo(), seal.getSealSeq(), seal.getSealNo(),
-                        seal.getVerifyNote(), seal.getVerifiedBy(), confirmed, order.getSealQty()));
+                        seal.getVerifyNote(), seal.getVerifiedBy(),
+                        brokenSeal ? "，结论=封签破损" : "", confirmed, order.getSealQty()));
+
+        // V6：核验发现封签破损——破损是客观事实，核验确认即异常成立（SEAL_BROKEN 自动确认启钟，
+        // 时钟起点=核验时刻，foundTime 不接受任何后续补录覆盖）
+        if (brokenSeal) {
+            TransportBatch sealBatch = batchMapper.selectById(order.getBatchId());
+            if (sealBatch != null && !CcConstants.BATCH_REVOKED.equals(sealBatch.getStatus())
+                    && !CcConstants.BATCH_SIGNED.equals(sealBatch.getStatus())) {
+                String desc = String.format("交接单 %s 第%d签[%s]核验确认封签破损：%s（核验人=%s，核验时刻=%s）",
+                        order.getHandoverNo(), seal.getSealSeq(), seal.getSealNo(),
+                        req.getVerifyNote(), seal.getVerifiedBy(), verifyTime);
+                exceptionLifecycleService.registerAutoConfirmed(sealBatch, CcConstants.EXC_SEAL_BROKEN,
+                        desc, verifyTime, null, null);
+            }
+        }
         return seal;
     }
 

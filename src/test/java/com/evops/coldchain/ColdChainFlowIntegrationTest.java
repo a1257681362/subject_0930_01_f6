@@ -67,6 +67,8 @@ class ColdChainFlowIntegrationTest {
     @Autowired private TransportBatchService batchService;
     @Autowired private ProbeService probeService;
     @Autowired private OpLogService opLogService;
+    @Autowired private com.evops.coldchain.service.ExceptionLifecycleService lifecycle;
+    @Autowired private com.evops.coldchain.support.TestSubjects testSubjects;
     @Autowired private TransportBatchMapper batchMapper;
     @Autowired private ExceptionEventMapper exceptionMapper;
 
@@ -177,7 +179,16 @@ class ColdChainFlowIntegrationTest {
         List<ExceptionEvent> autoExc = batchService.listExceptions(batch.getId());
         assertEquals(1, autoExc.size());
         assertEquals(CcConstants.EXC_TEMP, autoExc.get(0).getExceptionType());
-        assertEquals(CcConstants.EXC_OPEN, autoExc.get(0).getStatus());
+        // V6：温度超限客观成立即确认启钟（不再是待确认 OPEN），等级 L1，时钟起点=首次发现临界时刻
+        assertEquals(CcConstants.EXC_CONFIRMED, autoExc.get(0).getStatus());
+        assertEquals(CcConstants.GRADE_L1, autoExc.get(0).getGrade());
+        assertEquals(0, autoExc.get(0).getFoundTime().compareTo(T0.plusHours(3)),
+                "首次发现时间=越限临界采样时刻");
+        assertEquals(0, autoExc.get(0).getConfirmTime().compareTo(T0.plusHours(3)),
+                "处置时钟按临界时间同一口径归属");
+        assertEquals(0, autoExc.get(0).getResponseDueTime().compareTo(T0.plusHours(3).plusMinutes(30)));
+        assertEquals(0, autoExc.get(0).getResolveDueTime().compareTo(T0.plusHours(3).plusMinutes(120)));
+        assertEquals(CcConstants.ROLE_QA, autoExc.get(0).getReviewerRoleSnap());
         String originalDescription = autoExc.get(0).getDescription();
         Long autoExcId = autoExc.get(0).getId();
 
@@ -205,28 +216,57 @@ class ColdChainFlowIntegrationTest {
         assertEquals("/v/photo-01", evidences.get(0).getFileUrl());
         assertEquals("到货外箱照", evidences.get(0).getNote());
 
-        // ---------- 9. 存在 OPEN 异常时签收必须被拦截 ----------
+        // ---------- 9. 存在未关闭异常时签收必须被拦截 ----------
         SignRequest signReq = signReq(batch.getId(), batch);
         BusinessException blocked = assertThrows(BusinessException.class, () -> batchService.sign(signReq));
-        assertTrue(blocked.getMessage().contains("未处理异常"));
+        assertTrue(blocked.getMessage().contains("未关闭异常"));
 
-        // ---------- 10. 异常处理闭环：原描述不被修改，只追加 resolve* ----------
-        ExceptionEvent resolved1 = batchService.resolveException(autoExcId, "回温30分钟恢复至5.6℃，评估药品合格");
+        // ---------- 10. 分级温度异常按新闭环关闭：引用证据的处置结论 -> QA 复核 ----------
+        // 旧类型 DAMAGE 仍可一句话直接闭环
         ExceptionEvent resolved2 = batchService.resolveException(damageExc.getId(), "破损2盒隔离拒收，其余正常");
-        // 第二次越限自动生成的温度异常同样处理（不允许遗留 OPEN）
+        assertEquals(CcConstants.EXC_RESOLVED, resolved2.getStatus());
+
+        // 分级温度异常不能再直接闭环
+        BusinessException noDirect = assertThrows(BusinessException.class,
+                () -> batchService.resolveException(autoExcId, "一句话试图直接关闭"));
+        assertTrue(noDirect.getMessage().contains("分级异常"));
+
+        // 两条温度异常各追加证据、提交引用证据的结论，再由 QA 岗位复核关闭
         List<ExceptionEvent> allExc = batchService.listExceptions(batch.getId());
         for (ExceptionEvent e : allExc) {
-            if (CcConstants.EXC_OPEN.equals(e.getStatus())) {
-                batchService.resolveException(e.getId(), "复核温控曲线，越限时段短暂且已回温，药品评估合格");
+            if (CcConstants.EXC_TEMP.equals(e.getExceptionType())
+                    && CcConstants.EXC_CONFIRMED.equals(e.getStatus())) {
+                appendEvidence(e.getId(), "temp-curve-" + e.getId() + ".csv",
+                        "/v/temp-curve-" + e.getId(), "越限时段温控曲线与回温记录");
+                Long evidenceId = batchService.listEvidence(e.getId()).get(0).getId();
+                lifecycle.conclude(e.getId(), "复核温控曲线，越限时段短暂且已回温，药品评估合格",
+                        java.util.Collections.singletonList(evidenceId));
+                assertEquals(CcConstants.EXC_REVIEWING, exceptionMapper.selectById(e.getId()).getStatus());
             }
         }
+        // 非 QA 角色复核一律拒绝（服务直调无主体时同样拒绝）
+        BusinessException notQa = assertThrows(BusinessException.class,
+                () -> lifecycle.review(autoExcId, true, "无资格角色试图复核"));
+        assertTrue(notQa.getMessage().contains("QA"));
+
+        final long batchIdForReview = batch.getId();
+        testSubjects.runAs(6L, "qa", () -> {
+            for (ExceptionEvent e : batchService.listExceptions(batchIdForReview)) {
+                if (CcConstants.EXC_REVIEWING.equals(e.getStatus())) {
+                    lifecycle.review(e.getId(), true, "QA 复核温控曲线与评估结论，证据充分，同意关闭");
+                }
+            }
+        });
+        ExceptionEvent resolved1 = exceptionMapper.selectById(autoExcId);
         assertEquals(CcConstants.EXC_RESOLVED, resolved1.getStatus());
-        assertEquals(CcConstants.EXC_RESOLVED, resolved2.getStatus());
+        assertEquals(CcConstants.REVIEW_APPROVED, resolved1.getReviewStatus());
         assertNotNull(resolved1.getResolveTime());
-        assertEquals(originalDescription, exceptionMapper.selectById(autoExcId).getDescription(),
-                "处理动作不得覆盖异常原描述");
+        assertNotNull(resolved1.getEvidenceRefs(), "处置结论必须引用证据");
+        assertEquals(originalDescription, resolved1.getDescription(),
+                "处置/复核动作不得覆盖异常原描述");
         // 凭证仍为两条且内容不变
         assertEquals(2, batchService.listEvidence(damageExc.getId()).size());
+        assertEquals(0, lifecycle.unclosedCount(batch.getId()));
 
         // ---------- 11. 按 V1 快照核对签收：用 V1 值通过，用档案现值 V2 必须失败 ----------
         SignRequest wrongApproval = signReq(batch.getId(), batch);

@@ -42,7 +42,7 @@ V2 另增路线温区分段四张表（见下节）与 `seq_cc_route_no` 序列�
 
 内置账号：`dispatcher/dispatcher123`（调度）、`carrier/carrier123`（在途）、
 `receiver/receiver123`（签收）、`admin/admin123`（冷链温控管理员，V5 预警查看/导出/模板维护）、
-`bootstrap/bootstrap`。
+`qa/qa123`（V6 质量复核岗，唯一可复核关闭分级异常的角色）、`bootstrap/bootstrap`。
 
 | 动作 | 方法与路径 |
 | --- | --- |
@@ -404,3 +404,107 @@ curl -u admin:admin123 -OJ http://localhost:8080/api/cold-chain/alerts/export
 与已产生预警不回写不消失、按采样点连续超限时长（短暂抖动≤合并窗合并且起点不变、对照超窗正常
 段打断重计）、一次连续段只产一条预警；以及**重启定时任务/扫描游标从头重放后“预警阈值按药品
 类别继承”不多写任何预警/异常/流水、操作者始终为 system 不丢**。
+
+---
+
+## 冷链运输 V6：运输异常分级与处置时钟
+
+在 V1~V5 台账上建立运输异常分级机制，覆盖**温度超限、封签破损、延误、收货拒签**四类异常：
+按类型配置等级（L1 重大 / L2 较大 / L3 一般）、响应时限、处置时限、处置岗位、升级岗位与
+关闭前复核岗位；异常确认即启动处置时钟；升级通知逐次记录发送结果与失败/重试原因；处置结论
+必须引用证据并由指定角色复核才能关闭；未关闭异常拦截签收与结算。
+
+### 核心规则
+
+- **分级配置与确认时快照**：`t_cc_exception_grade_rule` 四类各一行（默认：温度超限 L1
+  30/120 分钟 承运→调度、封签破损 L2 60/240 分钟 收货→调度、延误 L3 120/480 分钟 承运→调度、
+  收货拒签 L1 30/180 分钟 调度→管理员；复核岗统一为 QA）。规则可随时调整，但**只影响此后确认
+  的异常**——确认瞬间把等级/时限/岗位逐字段快照到异常行，在途时钟与档案快照、路线分段快照、
+  预警模板快照同一口径，不随后续改规则变动。
+- **确认才启钟，补录不覆盖首次发现时间**：人工补录为 `OPEN`（待确认，时钟不启动），显式确认后
+  置 `CONFIRMED`，`confirm_time`=确认时刻，`response_due_time`/`resolve_due_time`=确认时刻+快照
+  时限；`found_time` 只在异常首次落库写一次，确认/补录/重放/重试均不覆盖。系统客观判定成立的
+  异常（温度达到临界、封签核验破损、收货拒签）**成立即确认**。
+- **温度分级调到临界时间，处置时钟同一口径归属**：温度异常的 `found_time` 与 `confirm_time`
+  都取“连续超限达到容忍时长的临界采样时刻”，与 `t_cc_temp_alert.first_found_time`
+  （= `trigger_time`）严格同值；截止时间 = 临界时刻 + 快照时限。预警闭环不再越级关闭温度异常，
+  后者必须走引用证据 + QA 复核关闭。
+- **升级通知只追加**：`t_cc_exception_notify_log` 每次发送/重试独立一行，记录目标岗位、阶段
+  （RESPONSE/ESCALATE/RETRY）、尝试次序、渠道（SITE 站内信 / WEBHOOK）、成功/失败结果；
+  失败必填 `fail_reason`，重试必填 `retry_reason`，历史失败行保留。无 endpoint 走站内信必达；
+  配了 webhook 走 HTTP 通道（超时/非 2xx 即失败）。定时扫描对“最近一次仍失败”的通知自动补发。
+- **结论引用证据 + 指定角色复核**：提交处置结论必须引用至少一条本异常名下的凭证ID，进入
+  `REVIEWING`；只能由规则快照的复核岗位（默认 QA）复核：通过才 `RESOLVED` 关闭，驳回退回
+  `CONFIRMED`（时钟不重启、截止不变，历史复核意见在 `t_cc_exception_review_log` 逐次追加）。
+  分级四类异常不能再用一句话直接闭环（旧类型 DAMAGE/OTHER 保留旧闭环）。
+- **未关闭不能签收、不能结算**：OPEN/CONFIRMED/REVIEWING 全部计入未关闭数，拦截签收；
+  `POST /batches/settle` 要求批次已签收且未关闭数为 0，`settle_time/settle_by/settle_remark`
+  只记账一次。收货拒签（`POST /batches/reject`）成立即重大 L1 异常，批次不进入签收，须处置关闭。
+- **逾期升级**：处置截止逾期仍未关闭的 CONFIRMED 异常，定时任务置升级事实（只进不退，每异常
+  一次）并通知升级岗位；已撤回批次停止督办。开关 `coldchain.exception-clock.enabled`（默认 true）。
+
+### 表结构增量（详见 schema.sql，版本标记 `cold-chain-6`）
+
+- 新增 `t_cc_exception_grade_rule`（四类分级规则，含四条默认数据）、
+  `t_cc_exception_notify_log`（通知发送/重试只追加）、
+  `t_cc_exception_review_log`（复核意见只追加）。
+- `t_cc_exception` 增 `found_time/found_source/grade/grade_name/*_minutes_snap/*_role_snap/
+  confirm_by/confirm_time/response_due_time/resolve_due_time/escalated/escalate_time/conclusion/
+  evidence_refs/review_status/review_by/review_time/review_note`；
+  `t_cc_temp_alert` 增 `first_found_time`（临界时刻）；
+  `t_cc_transport_batch` 增 `settle_time/settle_by/settle_remark`。
+
+### 接口增量（仍在 `/api/cold-chain` 下，HTTP Basic）
+
+| 动作 | 方法与路径 | 权限 |
+| --- | --- | --- |
+| 分级规则查看 / 调整（只影响此后确认的异常） | `GET/POST /exceptions/grade-rules` | `coldchain:exception:rule:manage` |
+| 确认补录异常（定级快照+启钟+首响通知） | `POST /exceptions/{id}/confirm` | `coldchain:exception:confirm` |
+| 提交处置结论（必须引用证据） | `POST /exceptions/{id}/conclude` | `coldchain:exception:conclude` |
+| 关闭前复核（通过/驳回，须 QA 角色） | `POST /exceptions/{id}/review` | `coldchain:exception:review` |
+| 通知手动重试（必填重试原因） | `POST /exceptions/{id}/notify-retry` | `coldchain:exception:notify:retry` |
+| 异常处置详情（通知记录+复核记录） | `GET /exceptions/{id}` | 登录即可 |
+| 手动触发时钟扫描（逾期升级+失败重试） | `POST /exceptions/clock/scan` | `coldchain:exception:rule:manage` |
+| 收货拒签（成立即 L1 确认启钟） | `POST /batches/reject` | `coldchain:exception:confirm` |
+| 批次结算（已签收且无未关闭异常） | `POST /batches/settle` | `coldchain:batch:settle` |
+
+示例（延误补录 → 确认 → 引用证据的结论 → QA 复核 → 签收 → 结算）：
+
+```bash
+# 调度补录一条延误（OPEN 待确认，时钟不启动；occurredTime=首次发现时间，只写一次）
+curl -u dispatcher:dispatcher123 -H 'Content-Type: application/json' -X POST \
+  http://localhost:8080/api/cold-chain/batches/exceptions -d \
+  '{"batchId":1,"exceptionType":"DELAY","description":"高速管制延误2小时",
+    "occurredTime":"2026-10-03T09:00:00"}'
+
+# 确认启钟（按当前 DELAY 规则定级，时钟自确认时刻起算）
+curl -u dispatcher:dispatcher123 -X POST \
+  http://localhost:8080/api/cold-chain/exceptions/101/confirm
+
+# 追加证据并在结论中引用（evidenceIds 必须属于本异常）
+curl -u dispatcher:dispatcher123 -H 'Content-Type: application/json' -X POST \
+  http://localhost:8080/api/cold-chain/batches/exceptions/evidence -d \
+  '{"exceptionId":101,"fileName":"traffic.png","fileUrl":"/v/traffic","note":"管制通告截图"}'
+curl -u dispatcher:dispatcher123 -H 'Content-Type: application/json' -X POST \
+  http://localhost:8080/api/cold-chain/exceptions/101/conclude -d \
+  '{"conclusion":"道路管制导致延误，温控全程达标，药品质量无影响","evidenceIds":[201]}'
+
+# 只能由 QA 岗位复核关闭（通过/驳回都必须留复核意见）
+curl -u qa:qa123 -H 'Content-Type: application/json' -X POST \
+  http://localhost:8080/api/cold-chain/exceptions/101/review -d \
+  '{"approved":true,"reviewNote":"管制通告与温控曲线齐备，同意关闭"}'
+
+# 全部异常复核关闭后签收，再结算（未关闭异常会被拦截）
+curl -u dispatcher:dispatcher123 -H 'Content-Type: application/json' -X POST \
+  http://localhost:8080/api/cold-chain/batches/settle -d '{"batchId":1,"settleRemark":"10月运费结算"}'
+```
+
+### V6 验收
+
+`ExceptionGradingLifecycleIntegrationTest`（5 个用例，内存 H2 + 可控通知通道替身）覆盖：
+四类分级快照与规则调整只影响新异常、确认才启钟且补录不覆盖首次发现时间、温度临界时间与
+处置时钟同一口径（foundTime=confirmTime=预警 firstFoundTime）、通知失败原因与手动/定时重试
+原因逐次留痕且 attempt 递增、逾期升级一次且不重复、结论必须引用本异常证据、非 QA 角色禁止
+复核、驳回后时钟不重启可重处、QA 通过才关闭、未关闭异常拦截签收与结算、收货拒签即 L1；
+以及 Shiro 权限点的真实 HTTP 校验（401/403/200）。既有 V1/V5 测试同步改为新复核闭环口径，
+全套 26 个用例通过。

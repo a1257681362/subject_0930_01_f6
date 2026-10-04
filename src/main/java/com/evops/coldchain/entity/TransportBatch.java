@@ -66,6 +66,11 @@ public class TransportBatch extends BaseEntity {
     // —— V5 温控预警：派车时按药品储存温区从类别模板快照命中的温区代码（连续超限/预警按此温区）——
     private String alertZoneCode;
 
+    // —— V6：结算记账（settleTime 为空=尚未结算；未关闭异常未清零前不可结算）——
+    private LocalDateTime settleTime;
+    private Long settleBy;
+    private String settleRemark;
+
     public String getBatchNo() { return batchNo; }
     public void setBatchNo(String batchNo) { this.batchNo = batchNo; }
     public Long getOrderId() { return orderId; }
@@ -138,4 +143,12 @@ public class TransportBatch extends BaseEntity {
     public void setResponsibleParty(String responsibleParty) { this.responsibleParty = responsibleParty; }
     public String getAlertZoneCode() { return alertZoneCode; }
     public void setAlertZoneCode(String alertZoneCode) { this.alertZoneCode = alertZoneCode; }
+
+    // —— V6：结算记账 ——
+    public LocalDateTime getSettleTime() { return settleTime; }
+    public void setSettleTime(LocalDateTime settleTime) { this.settleTime = settleTime; }
+    public Long getSettleBy() { return settleBy; }
+    public void setSettleBy(Long settleBy) { this.settleBy = settleBy; }
+    public String getSettleRemark() { return settleRemark; }
+    public void setSettleRemark(String settleRemark) { this.settleRemark = settleRemark; }
 }

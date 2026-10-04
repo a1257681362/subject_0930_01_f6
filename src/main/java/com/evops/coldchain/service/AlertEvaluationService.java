@@ -61,6 +61,8 @@ public class AlertEvaluationService {
     private ExceptionEventMapper exceptionMapper;
     @Resource
     private TransportBatchMapper batchMapper;
+    @Resource
+    private ExceptionLifecycleService lifecycleService;
 
     @Resource
     private OpLogService opLogService;
@@ -249,6 +251,9 @@ public class AlertEvaluationService {
         alert.setJitterGapMinutes(zone.getJitterGapMinutes());
         alert.setStartTime(start);
         alert.setTriggerTime(trigger.getRecordTime());
+        // V6：首次发现时间（临界时刻）与触发时刻同值；联动温度异常的 foundTime/confirmTime
+        // 也取同一时刻，温度分级与处置时钟严格同一口径归属。
+        alert.setFirstFoundTime(trigger.getRecordTime());
         alert.setLastExceedTime(trigger.getRecordTime());
         alert.setDurationMinutes(durationMinutes);
         alert.setPeakTemperature(peak);
@@ -278,23 +283,11 @@ public class AlertEvaluationService {
         streak.setAlertId(alert.getId());
         streakMapper.updateById(streak);
 
-        // 联动温度异常事件（与 V1 自动异常同一套挂起/签收卡口）；随预警首次产生一次性插入
-        ExceptionEvent event = new ExceptionEvent();
-        event.setBatchId(batch.getId());
-        event.setExceptionType(CcConstants.EXC_TEMP);
-        event.setDescription(alert.getDescription());
-        event.setOccurredTime(trigger.getRecordTime());
-        event.setStatus(CcConstants.EXC_OPEN);
-        event.setAlertId(alert.getId());
-        exceptionMapper.insert(event);
-
-        if (!CcConstants.BATCH_EXCEPTION.equals(batch.getStatus())
-                && !CcConstants.BATCH_SIGNED.equals(batch.getStatus())
-                && !CcConstants.BATCH_REVOKED.equals(batch.getStatus())) {
-            batch.setStatus(CcConstants.BATCH_EXCEPTION);
-        }
-        batch.setHasTempExcursion(true);
-        batchMapper.updateById(batch);
+        // 联动温度异常事件（与温度上报自动异常同一套挂起/签收卡口）：
+        // V6 起温度异常按分级机制“客观成立即确认”，处置时钟自临界时刻（=firstFoundTime）起算，
+        // 随预警首次产生一次性登记（预警存在检查 + 唯一约束保证不重复登记）。
+        lifecycleService.registerAutoConfirmed(batch, CcConstants.EXC_TEMP, alert.getDescription(),
+                alert.getFirstFoundTime(), null, alert.getId());
 
         opLogService.log(CcConstants.ENT_TEMP_ALERT, alert.getId(), batch.getId(), CcConstants.ACT_ALERT_RAISE,
                 alert.getDescription());
@@ -369,21 +362,17 @@ public class AlertEvaluationService {
         alert.setResolveTime(LocalDateTime.now());
         alertMapper.updateById(alert);
 
-        // 一并闭环由该预警联动产生的温度异常（仍只追加 resolve*，原描述与凭证不改），
-        // 使“处理预警”后批次不再被 OPEN 异常卡住签收。
+        // V6：预警闭环只关闭预警本身，不再越级直接关闭联动的温度异常。
+        // 温度异常是分级异常，必须走“处置结论（引用证据）→ 指定岗位复核”关闭；
+        // 此处仅追加留痕提示，批次仍可能被未关闭异常卡在签收/结算卡口。
         List<ExceptionEvent> linked = exceptionMapper.selectList(new QueryWrapper<ExceptionEvent>()
-                .eq("alert_id", alertId).eq("status", CcConstants.EXC_OPEN));
-        for (ExceptionEvent e : linked) {
-            e.setStatus(CcConstants.EXC_RESOLVED);
-            e.setResolveNote("随温控预警#" + alertId + " 一并闭环：" + resolveNote);
-            e.setResolveBy(UserContext.currentId());
-            e.setResolveTime(LocalDateTime.now());
-            exceptionMapper.updateById(e);
-        }
+                .eq("alert_id", alertId));
+        long linkedOpen = linked.stream().filter(e -> !CcConstants.EXC_RESOLVED.equals(e.getStatus())).count();
 
         opLogService.log(CcConstants.ENT_TEMP_ALERT, alert.getId(), alert.getBatchId(),
                 CcConstants.ACT_ALERT_RESOLVE, "温控预警#" + alertId + " 处理闭环：" + resolveNote
-                        + (linked.isEmpty() ? "" : "；联动闭环温度异常 " + linked.size() + " 条"));
+                        + String.format("；联动温度异常 %d 条（未关闭 %d 条，须按分级机制引用证据并经质量复核关闭）",
+                        linked.size(), linkedOpen));
         return alert;
     }
 }

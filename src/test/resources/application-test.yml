@@ -15,8 +15,11 @@ mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
 
-# 集成测试直调 AlertScanService 模拟定时扫描，关闭后台定时器避免并发干扰
+# 集成测试直调服务模拟定时扫描，关闭后台定时器避免并发干扰：
+# - alert-scan：V5 温控预警定时扫描
+# - exception-clock：V6 异常处置时钟扫描（逾期升级/失败通知重试）
 coldchain:
   alert-scan:
     enabled: false
-
+  exception-clock:
+    enabled: false

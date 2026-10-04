@@ -91,6 +91,30 @@ public class ShiroConfig {
         chain.addPathDefinition("/ui/cold-chain/alerts",
                 "authcBasic, perms[" + com.evops.coldchain.CcConstants.PERM_ALERT_VIEW + "]");
 
+        // —— V6 运输异常分级与处置时钟（具体路径在前，宽泛只读在后）——
+        // 分级规则查看/调整同一路径，统一要求规则管理权限（与 V5 /categories 同做法）
+        chain.addPathDefinition("/api/cold-chain/exceptions/grade-rules",
+                "authcBasic, perms[" + com.evops.coldchain.CcConstants.PERM_EXCEPTION_RULE_MANAGE + "]");
+        // 处置时钟手动扫描（运维入口）：规则管理权限
+        chain.addPathDefinition("/api/cold-chain/exceptions/clock/scan",
+                "authcBasic, perms[" + com.evops.coldchain.CcConstants.PERM_EXCEPTION_RULE_MANAGE + "]");
+        chain.addPathDefinition("/api/cold-chain/exceptions/*/confirm",
+                "authcBasic, perms[" + com.evops.coldchain.CcConstants.PERM_EXCEPTION_CONFIRM + "]");
+        chain.addPathDefinition("/api/cold-chain/exceptions/*/conclude",
+                "authcBasic, perms[" + com.evops.coldchain.CcConstants.PERM_EXCEPTION_CONCLUDE + "]");
+        chain.addPathDefinition("/api/cold-chain/exceptions/*/review",
+                "authcBasic, perms[" + com.evops.coldchain.CcConstants.PERM_EXCEPTION_REVIEW + "]");
+        chain.addPathDefinition("/api/cold-chain/exceptions/*/notify-retry",
+                "authcBasic, perms[" + com.evops.coldchain.CcConstants.PERM_EXCEPTION_NOTIFY_RETRY + "]");
+        // 异常详情/通知与复核记录只读
+        chain.addPathDefinition("/api/cold-chain/exceptions/**", "authcBasic");
+
+        // 收货拒签登记 / 批次结算
+        chain.addPathDefinition("/api/cold-chain/batches/reject",
+                "authcBasic, perms[" + com.evops.coldchain.CcConstants.PERM_EXCEPTION_CONFIRM + "]");
+        chain.addPathDefinition("/api/cold-chain/batches/settle",
+                "authcBasic, perms[" + com.evops.coldchain.CcConstants.PERM_BATCH_SETTLE + "]");
+
         // 冷链台账接口与管理页面使用 HTTP Basic，便于 curl/联调；浏览器会弹出登录框
         chain.addPathDefinition("/api/**", "authcBasic");
         chain.addPathDefinition("/ui/**", "authcBasic");

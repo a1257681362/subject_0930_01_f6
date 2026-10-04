@@ -372,9 +372,16 @@ class CategoryAlertTemplateIntegrationTest {
                 Collections.singletonMap("resolveNote", "回温复核合格"), "admin", String.class);
         assertEquals(HttpStatus.OK, resolved.getStatusCode());
         assertEquals(CcConstants.ALERT_RESOLVED, alertMapper.selectById(alertId).getStatus());
-        // 闭环联动温度异常一并 RESOLVED，批次可继续签收
+        // V6：预警闭环不再越级关闭联动温度异常——异常按分级机制保持已确认(CONFIRMED)待处置，
+        // 且温度分级与处置时钟按临界时间同一口径：firstFoundTime == 异常 foundTime/confirmTime == 预警触发时刻
         for (ExceptionEvent e : exceptions(batchId)) {
-            assertEquals(CcConstants.EXC_RESOLVED, e.getStatus());
+            assertEquals(CcConstants.EXC_CONFIRMED, e.getStatus(),
+                    "预警闭环不得越级关闭分级温度异常，须引用证据并经质量复核关闭");
+            assertEquals(CcConstants.GRADE_L1, e.getGrade());
+            assertEquals(0, alertMapper.selectById(alertId).getFirstFoundTime().compareTo(e.getFoundTime()));
+            assertEquals(0, alertMapper.selectById(alertId).getFirstFoundTime().compareTo(e.getConfirmTime()));
+            assertEquals(0, e.getConfirmTime().compareTo(e.getFoundTime()),
+                    "系统判定异常时钟起点=首次发现临界时刻");
         }
 
         ResponseEntity<byte[]> csv = exchange("/alerts/export", HttpMethod.GET, null, "admin", byte[].class);
